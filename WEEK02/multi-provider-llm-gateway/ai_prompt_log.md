@@ -74,4 +74,10 @@ tiktoken check: the sandbox blocked tiktoken’s one-time download of its encodi
 To try it: pip install openai anthropic tiktoken pydantic, set OPENAI_API_KEY and ANTHROPIC_API_KEY, then run python gateway.py gpt-4o-mini.
 
 ## 4. Audit Findings
-(we'll fill this in together in Step 4)
+### B1 — Retired Anthropic model IDs
+- **Problem:** The draft registered `claude-3-5-sonnet-latest` and `claude-3-5-haiku-latest`.
+  Both are retired (2025-10-28 and 2026-02-19), so any Anthropic request returns 404.
+- **How found:** Checked Anthropic's model deprecations page; `claude-haiku-5-5` was rejected as UnsupportedModelError.
+- **Fix:** Replaced them with `claude-sonnet-5-5` and `claude-haiku-5-5` at current prices.
+  Documented Haiku 5.5's tiered pricing (>100K tokens) as a known limitation.
+- **Diff:** (paste output of `git diff src/pricing.py`)
