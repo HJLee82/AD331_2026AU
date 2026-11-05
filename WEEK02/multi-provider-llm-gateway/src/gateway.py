@@ -39,7 +39,7 @@ __all__ = [
     "InvalidRequestError",
     "GatewayProviderError",
     "RateLimitExceededError",
-    "InvalidAPIKeyError",
+    "AuthenticationError",
     "ProviderConnectionError",
     "ProviderTimeoutError",
     "ProviderBadRequestError",
@@ -121,7 +121,7 @@ class RateLimitExceededError(GatewayProviderError):
         self.retry_after = retry_after
 
 
-class InvalidAPIKeyError(GatewayProviderError):
+class AuthenticationError(GatewayProviderError):
     """Missing, invalid, or insufficiently-permissioned API key."""
 
 
@@ -464,8 +464,10 @@ class UnifiedLLMGateway:
 
     def _get_openai_client(self) -> AsyncOpenAI:
         if self._openai is None:
+            if not self._openai_key.get_secret_value().startswith("sk-"):
+                raise AuthenticationError("OPENAI_API_KEY looks malformed (expected prefix 'sk-').", provider="openai")
             if self._openai_key is None:
-                raise InvalidAPIKeyError("No OpenAI API key configured (set OPENAI_API_KEY).", provider="openai")
+                raise AuthenticationError("No OpenAI API key configured (set OPENAI_API_KEY).", provider="openai")
             self._openai = AsyncOpenAI(
                 api_key=self._openai_key.get_secret_value(),
                 timeout=self._timeout,
@@ -475,8 +477,10 @@ class UnifiedLLMGateway:
 
     def _get_anthropic_client(self) -> AsyncAnthropic:
         if self._anthropic is None:
+            if not self._anthropic_key.get_secret_value().startswith("sk-ant-"):
+                raise AuthenticationError("ANTHROPIC_API_KEY looks malformed (expected prefix 'sk-ant-').", provider="anthropic")
             if self._anthropic_key is None:
-                raise InvalidAPIKeyError("No Anthropic API key configured (set ANTHROPIC_API_KEY).", provider="anthropic")
+                raise AuthenticationError("No Anthropic API key configured (set ANTHROPIC_API_KEY).", provider="anthropic")
             self._anthropic = AsyncAnthropic(
                 api_key=self._anthropic_key.get_secret_value(),
                 timeout=self._timeout,
@@ -534,9 +538,9 @@ class UnifiedLLMGateway:
             cached_input_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
             latency_s=round(latency, 4),
-            ttft_s=round(ttft, 4) if ttft is not None else None,
+            ttft_ms=round(ttft * 1000, 1) if ttft is not None else None, 
             tokens_per_second=round(tps, 2),
-            cost_usd=float(cost),
+            total_cost_usd=float(cost),
             usage_source=usage_source,
             prompt_tokens_estimate=prompt_estimate,
             finish_reason=finish_reason,
@@ -609,7 +613,7 @@ def _translate_sdk_error(exc: Any, provider: Provider, sdk: Any, secrets: tuple[
         )
     if isinstance(exc, (sdk.AuthenticationError, sdk.PermissionDeniedError)):
         # Deliberately do not echo the provider message: it may include a key fragment.
-        return InvalidAPIKeyError("Authentication with provider failed; check the API key and its permissions.", **common)
+        return AuthenticationError("Authentication with provider failed; check the API key and its permissions.", **common)
     if isinstance(exc, sdk.APITimeoutError):
         return ProviderTimeoutError("Provider request timed out.", retryable=True, **common)
     if isinstance(exc, sdk.APIConnectionError):

@@ -62,7 +62,7 @@ Tokens/sec is output tokens divided by the time from the first token to the end,
 Cached tokens are billed at their own (cheaper) rates.
 usage_source says whether the counts came from the provider or had to be estimated locally.
 tiktoken check: for OpenAI, tiktoken’s prompt count is compared with OpenAI’s and a warning is logged if they differ. Billing always uses OpenAI’s number.
-Errors: the custom types are RateLimitExceededError (includes the retry_after wait time), InvalidAPIKeyError, ProviderConnectionError / ProviderTimeoutError, ProviderBadRequestError and UnsupportedModelError. All of them inherit from GatewayProviderError or GatewayError.
+Errors: the custom types are RateLimitExceededError (includes the retry_after wait time), AuthenticationError, ProviderConnectionError / ProviderTimeoutError, ProviderBadRequestError and UnsupportedModelError. All of them inherit from GatewayProviderError or GatewayError.
 No leaks: errors are raised from None, so no stack trace comes along. Key patterns are scrubbed from messages, and error text from failed logins is never repeated. The tests confirmed no key showed up in errors, logs or the gateway’s repr.
 Early exit: if the caller stops reading partway through, the connection still closes properly.
 ⚠️ Things I had to work around, and one you should check

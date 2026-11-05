@@ -26,10 +26,10 @@ class ChunkTelemetry(BaseModel):
     cache_write_tokens: int = Field(default=0, ge=0, description="Prompt tokens written to cache (Anthropic only).")
 
     latency_s: float = Field(ge=0, description="Wall-clock seconds from request start to stream end.")
-    ttft_s: Optional[float] = Field(default=None, ge=0, description="Seconds until the first text token. None if no text was produced.")
+    ttft_ms: Optional[float] = Field(default=None, ge=0, description="Milliseconds until the first text token. None if no text was produced.")
     tokens_per_second: float = Field(ge=0, description="Decode throughput: output tokens / (end - first token).")
 
-    cost_usd: float = Field(ge=0, description="Total request cost in USD, from the static pricing table.")
+    total_cost_usd: float = Field(ge=0, description="Total request cost in USD, from the static pricing table.")
 
     usage_source: UsageSource = Field(description="'provider' if counts came from the API, 'estimated' if reconstructed locally.")
     prompt_tokens_estimate: Optional[int] = Field(default=None, ge=0, description="Local tiktoken estimate (OpenAI only), for verification.")
