@@ -74,82 +74,81 @@ tiktoken check: the sandbox blocked tiktoken’s one-time download of its encodi
 To try it: pip install openai anthropic tiktoken pydantic, set OPENAI_API_KEY and ANTHROPIC_API_KEY, then run python gateway.py gpt-4o-mini.
 
 ## 4. Audit Findings
-### B1 — Retired Anthropic model IDs
-- **Problem:** The draft registered `claude-3-5-sonnet-latest` and `claude-3-5-haiku-latest`.
-  Both are retired (2025-10-28 and 2026-02-19), so any Anthropic request returns 404.
-- **How found:** Checked Anthropic's model deprecations page; `claude-haiku-5-5` was rejected as UnsupportedModelError.
-- **Fix:** Replaced them with `claude-sonnet-5-5` and `claude-haiku-5-5` at current prices.
-  Documented Haiku 5.5's tiered pricing (>100K tokens) as a known limitation.
-- **Diff:** diff --git a/WEEK02/multi-provider-llm-gateway/src/pricing.py b/WEEK02/multi-provider-llm-gateway/src/pricing.py
-index 649717f..84ea96b 100644
---- a/WEEK02/multi-provider-llm-gateway/src/pricing.py
-+++ b/WEEK02/multi-provider-llm-gateway/src/pricing.py
-@@ -61,22 +61,25 @@ MODEL_REGISTRY: Final[Mapping[str, ModelSpec]] = MappingProxyType(
-             pricing=ModelPricing(D("2.50"), D("10.00"), cached_input_per_mtok=D("1.25")),
-         ),
-         # ---- Anthropic ---------------------------------------------------
--        "claude-3-5-sonnet": ModelSpec(
-+        # claude-3-5-sonnet (retired 2025-10-28) and claude-3-5-haiku (retired 2026-02-19)
-+        # were replaced with current models. Prices checked 2026-11-04.
-+        "claude-sonnet-5-5": ModelSpec(
-             provider="anthropic",
--            api_model="claude-3-5-sonnet-latest",
--            pricing=ModelPricing(D("3.00"), D("15.00"), cached_input_per_mtok=D("0.30"), cache_write_per_mtok=D("3.75")),
-+            api_model="claude-sonnet-5-5",
-+            pricing=ModelPricing(D("2.00"), D("10.00"), cached_input_per_mtok=D("0.20"), cache_write_per_mtok=D("2.50")),
-         ),
--        "claude-3-5-haiku": ModelSpec(
-+        # NOTE: Haiku 5.5 has tiered pricing. Rates below are for prompts <= 100K tokens.
-+        # Prompts > 100K tokens cost $0.50 in / $2.50 out per MTok (not modeled here).
-+        "claude-haiku-5-5": ModelSpec(
-             provider="anthropic",
--            api_model="claude-3-5-haiku-latest",
--            pricing=ModelPricing(D("0.80"), D("4.00"), cached_input_per_mtok=D("0.08"), cache_write_per_mtok=D("1.00")),
-+            api_model="claude-haiku-5-5",
-+            pricing=ModelPricing(D("0.10"), D("0.50"), cached_input_per_mtok=D("0.01"), cache_write_per_mtok=D("0.125")),
-         ),
-     }
- )
- 
- # Accept pinned snapshots of registered models, e.g. "gpt-4o-2024-08-06",
--# "claude-3-5-haiku-20241022", "claude-3-5-sonnet-latest". Anything else
--# (e.g. "gpt-4o-audio-preview") is rejected rather than silently mis-priced.
-+# "claude-3-5-haiku-20241022", "claude-3-5-sonnet-latest". Anything else is rejected rather than silently mis-priced.
- _SNAPSHOT_SUFFIX: Final = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8}|latest)$")
 
- ### B2 — Absolute imports break inside the `src` package
-- **Problem:** `gateway.py` used `from pricing import ...` and `from schemas import ...`.
-  Importing the package (`import src.gateway`, as the tests and app must) raised
-  `ModuleNotFoundError: No module named 'pricing'`.
-- **How found:** Ran `python -c "import src.gateway"` from the project root.
-- **Fix:** Switched to relative imports (`from .pricing`, `from .schemas`) and added
-  `[tool.pytest.ini_options] pythonpath = ["."]` so tests resolve `src`.
+### 4.1 Checklist items that passed (verified, no change needed)
+| Check | Result | Evidence |
+|---|---|---|
+| Async event-loop blocking | ✅ Pass | Uses `AsyncOpenAI` / `AsyncAnthropic`; tiktoken runs in `asyncio.to_thread` |
+| OpenAI final usage chunk (`choices=[]`, `content=None`) | ✅ Pass | `if not event.choices: continue` and `if text:` guard |
+| Anthropic event types | ✅ Pass | Handles `message_start`, `content_block_delta`, `message_delta` |
+| TTFT measured at first non-empty delta | ✅ Pass | `first_token_at` set only when text is non-empty |
+| Cost precision | ✅ Pass | `Decimal`, quantized to 1e-8 USD (stricter than `round(cost, 6)`) |
+| Persistent clients | ✅ Pass | Created once and cached on `self` |
+| Secret leakage | ✅ Pass | Regex redaction, `raise ... from None`, `__repr__` hides keys |
+
+### 4.2 Bugs found and fixed
+| # | Bug | Severity | How found |
+|---|---|---|---|
+| B1 | Retired Claude 3.5 model IDs | 🔴 Breaks all Anthropic calls | Deprecations page + `UnsupportedModelError` |
+| B2 | Absolute imports break inside `src` package | 🔴 Tests/app cannot import | `import src.gateway` → `ModuleNotFoundError` |
+| B3 | `.env` never loaded | 🔴 Keys ignored | Live run → "No OpenAI API key configured" |
+| B4 | Field/exception names differ from spec; no malformed-key check | 🟡 Spec mismatch | Compared against assignment Tests 3–4 |
+| B5 | `temperature` forced via `extra_body`; Claude 5.x rejects it | 🔴 Breaks all Anthropic calls | Live run → `400 temperature: Extra inputs are not permitted` |
+
+#### B1 — Retired Anthropic model IDs
+- **Problem:** Registered `claude-3-5-sonnet-latest` / `claude-3-5-haiku-latest`, retired on 2025-10-28 and 2026-02-19.
+- **Fix:** Replaced with `claude-sonnet-5-5` and `claude-haiku-5-5` at current prices (checked 2026-11-04).
+  Haiku 5.5's tiered pricing (>100K-token prompts) is documented as a known limitation.
 - **Diff:**
 ```diff
-(git --no-pager diff src/ pyproject.toml | pbcopy)
-```
- 
- ### B3 — `.env` file never loaded
-- **Problem:** The gateway reads keys only from `os.environ`, and no code called `load_dotenv()`.
-  With valid keys in `.env`, running the demo failed:
-  `Gateway error: [openai] No OpenAI API key configured (set OPENAI_API_KEY).`
-- **How found:** Ran `uv run python -m src.gateway gpt-4o-mini` after setting up `.env`.
-- **Fix:** Load `.env` at the entry point (`__main__` demo; later `app.py`), not inside the
-  library class, so the gateway stays side-effect free and tests can control env vars.
-- **Diff:**
-```diff
-(git --no-pager diff src/gateway.py | pbcopy)
+(paste)
 ```
 
-### B5 — Claude 5.x rejects `temperature` (AI workaround hid the problem)
-- **Problem:** The draft sent `temperature` via `extra_body` to bypass the Anthropic SDK's
-  signature, which no longer accepts it. Live call to `claude-haiku-5-5` returned
+#### B2 — Absolute imports inside the `src` package
+- **Problem:** `from pricing import ...` works only when running the file directly; `import src.gateway` failed.
+- **Fix:** Relative imports (`from .pricing`, `from .schemas`) + `[tool.pytest.ini_options] pythonpath = ["."]`.
+  Demo now runs as `python -m src.gateway`.
+- **Diff:**
+```diff
+(paste)
+```
+
+#### B3 — `.env` never loaded
+- **Problem:** Gateway reads only `os.environ`; nothing called `load_dotenv()`.
+- **Fix:** Load `.env` at the entry point (`__main__` demo, later `app.py`), not inside the library,
+  so the gateway has no hidden side effects and tests can control env vars.
+- **Diff:**
+```diff
+(paste)
+```
+
+#### B4 — Names don't match the spec; malformed keys not detected
+- **Problem:** Draft used `ttft_s`, `cost_usd`, `InvalidAPIKeyError`; spec tests use `ttft_ms`,
+  `total_cost_usd`, `AuthenticationError`. A key like `abc` was only rejected after a network call.
+- **Fix:** Renamed fields (TTFT now in ms), renamed the exception (kept the old name as an alias),
+  added local prefix checks (`sk-` / `sk-ant-`). Error messages never include the key.
+- **Note:** A mistake during this edit was caught immediately because `ChunkTelemetry` uses
+  `extra="forbid"`: Pydantic raised `ValidationError` instead of silently dropping a field.
+- **Diff:**
+```diff
+(paste)
+```
+
+#### B5 — AI workaround hid a removed parameter
+- **Problem:** The Anthropic SDK no longer accepts `temperature`. Instead of treating that as a signal,
+  the AI bypassed it with `extra_body`, claiming Claude 3.5 "still accepts it". Claude 5.x returned
   `400 invalid_request_error: temperature: Extra inputs are not permitted`.
-- **How found:** First live Anthropic request after fixing B1.
-- **Lesson:** The AI treated an SDK signature change as a typing nuisance instead of a signal
-  that the parameter was removed.
-- **Fix:** Added `supports_temperature` per model; temperature is only sent when supported.
+- **Fix:** Added `supports_temperature` per model; temperature is sent only when supported.
+- **Lesson:** An SDK signature change is information, not an obstacle to route around.
 - **Diff:**
 ```diff
-(git --no-pager diff src/ | pbcopy)
+(paste)
 ```
+
+### 4.3 Verified results after fixes
+| Model | In | Out | TTFT | Tokens/sec | Cost (USD) |
+|---|---|---|---|---|---|
+| gpt-4o-mini | 15 | 59 | 860.9 ms | 108.21 | 0.00003765 |
+| claude-haiku-5-5 | 23 | 104 | 505.6 ms | 182.85 | 0.00005430 |
+
+tiktoken prompt estimate (15) matched OpenAI's reported prompt tokens (15) exactly.
