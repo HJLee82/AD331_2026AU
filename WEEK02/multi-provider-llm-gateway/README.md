@@ -2,7 +2,7 @@
 
 ## 1. Project Overview & Architecture
 
-`UnifiedLLMGateway` is one async Python interface that streams responses from **OpenAI** and **Anthropic** in a single normalized format (`StreamChunk`). The final chunk carries telemetry: time to first token (TTFT), tokens per second, prompt/completion tokens, and USD cost to six decimals. A Streamlit UI lets you switch providers and compare them.
+`UnifiedLLMGateway` is one async Python interface that streams responses from **OpenAI** and **Anthropic** in a single normalized format (`StreamChunk`). The final chunk carries telemetry: time to first token (TTFT), tokens per second, prompt/completion tokens, and USD cost (shown to six decimals). A Streamlit UI lets you switch providers and compare them.
 
 ```mermaid
 sequenceDiagram
@@ -20,13 +20,13 @@ sequenceDiagram
     P-->>GW: provider, API model ID, prices, supports_temperature
     GW->>SDK: create(stream=True) on a persistent pooled client
     SDK->>API: HTTPS streaming request
+    API-->>GW: Anthropic only: message_start (input tokens)
     loop Server-sent events
-        API-->>SDK: provider-specific event
-        SDK-->>GW: OpenAI delta / Anthropic content_block_delta
+        API-->>GW: OpenAI choices[0].delta.content / Anthropic content_block_delta
         GW-->>UI: StreamChunk(delta_text, is_final=False)
         UI-->>U: Render text token by token
     end
-    API-->>SDK: usage (OpenAI final chunk / Anthropic message_start + message_delta)
+    API-->>GW: OpenAI final chunk (empty choices + usage) / Anthropic message_delta (output tokens)
     GW->>P: calculate_cost(tokens)
     GW-->>UI: StreamChunk(is_final=True, telemetry)
     UI-->>U: TTFT · tok/s · tokens · cost
@@ -34,7 +34,10 @@ sequenceDiagram
 
 ```
 multi-provider-llm-gateway/
+├── README.md
 ├── pyproject.toml          # uv project + pytest config
+├── uv.lock                 # pinned dependency versions
+├── .gitignore              # ignores .env, .venv/
 ├── .env.example            # key placeholders (real .env is git-ignored)
 ├── ai_prompt_log.md        # AI prompt, raw output, and full audit
 ├── src/
@@ -106,7 +109,7 @@ USD per 1 million tokens, checked against the official pricing pages on 2026-11-
 |---|---|---|---|---|---|
 | OpenAI | `gpt-4o-mini` | $0.15 | $0.60 | $0.075 | – |
 | OpenAI | `gpt-4o` | $2.50 | $10.00 | $1.25 | – |
-| Anthropic | `claude-sonnet-5-5` | $2.00 | $10.00 | $0.20 | $2.50 |
+| Anthropic | `claude-sonnet-5-5` | $2.00 | $10.00 | $0.10 | $2.50 |
 | Anthropic | `claude-haiku-5-5` | $0.10 | $0.50 | $0.01 | $0.125 |
 
 **Cost formula:** `(uncached_input × input + cache_read × cached + cache_write × write + output × output) / 1,000,000`, computed with `Decimal` to avoid floating-point drift.

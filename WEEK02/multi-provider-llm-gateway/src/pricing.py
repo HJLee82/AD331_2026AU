@@ -69,7 +69,7 @@ MODEL_REGISTRY: Final[Mapping[str, ModelSpec]] = MappingProxyType(
             provider="anthropic",
             api_model="claude-sonnet-5-5",
             supports_temperature=False,
-            pricing=ModelPricing(D("2.00"), D("10.00"), cached_input_per_mtok=D("0.20"), cache_write_per_mtok=D("2.50")),
+            pricing=ModelPricing(D("2.00"), D("10.00"), cached_input_per_mtok=D("0.10"), cache_write_per_mtok=D("2.50")),
         ),
         # NOTE: Haiku 5.5 has tiered pricing. Rates below are for prompts <= 100K tokens.
         # Prompts > 100K tokens cost $0.50 in / $2.50 out per MTok (not modeled here).
