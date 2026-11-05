@@ -15,7 +15,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from types import MappingProxyType
 from typing import Final, Mapping, Optional
 
-from schemas import Provider
+from .schemas import Provider
 
 _PER_MILLION: Final = Decimal(1_000_000)
 _COST_QUANTUM: Final = Decimal("0.00000001")  # 1e-8 USD
@@ -34,6 +34,7 @@ class ModelSpec:
     provider: Provider
     api_model: str  # ID sent to the API when the caller uses the bare registry name
     pricing: ModelPricing
+    supports_temperature: bool = True  
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,7 @@ class ResolvedModel:
     provider: Provider
     api_model: str
     pricing: ModelPricing
+    supports_temperature: bool = True
 
 
 D = Decimal
@@ -66,6 +68,7 @@ MODEL_REGISTRY: Final[Mapping[str, ModelSpec]] = MappingProxyType(
         "claude-sonnet-5-5": ModelSpec(
             provider="anthropic",
             api_model="claude-sonnet-5-5",
+            supports_temperature=False,
             pricing=ModelPricing(D("2.00"), D("10.00"), cached_input_per_mtok=D("0.20"), cache_write_per_mtok=D("2.50")),
         ),
         # NOTE: Haiku 5.5 has tiered pricing. Rates below are for prompts <= 100K tokens.
@@ -73,6 +76,7 @@ MODEL_REGISTRY: Final[Mapping[str, ModelSpec]] = MappingProxyType(
         "claude-haiku-5-5": ModelSpec(
             provider="anthropic",
             api_model="claude-haiku-5-5",
+            supports_temperature=False,
             pricing=ModelPricing(D("0.10"), D("0.50"), cached_input_per_mtok=D("0.01"), cache_write_per_mtok=D("0.125")),
         ),
     }
@@ -93,7 +97,7 @@ def resolve_model(model: str) -> ResolvedModel:
 
     spec = MODEL_REGISTRY.get(key)
     if spec is not None:
-        return ResolvedModel(model, key, spec.provider, spec.api_model, spec.pricing)
+        return ResolvedModel(model, key, spec.provider, spec.api_model, spec.pricing, spec.supports_temperature)
 
     match = _SNAPSHOT_SUFFIX.search(key)
     if match:
@@ -101,7 +105,7 @@ def resolve_model(model: str) -> ResolvedModel:
         spec = MODEL_REGISTRY.get(base)
         if spec is not None:
             # Caller pinned a specific snapshot: send it to the API verbatim.
-            return ResolvedModel(model, base, spec.provider, key, spec.pricing)
+            return ResolvedModel(model, base, spec.provider, key, spec.pricing, spec.supports_temperature)
 
     raise KeyError(model)
 

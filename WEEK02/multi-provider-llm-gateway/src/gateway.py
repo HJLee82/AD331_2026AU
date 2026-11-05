@@ -29,8 +29,8 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
-from pricing import ResolvedModel, calculate_cost, resolve_model, supported_models
-from schemas import ChunkTelemetry, Provider, StreamChunk, UsageSource
+from .pricing import ResolvedModel, calculate_cost, resolve_model, supported_models
+from .schemas import ChunkTelemetry, Provider, StreamChunk, UsageSource
 
 __all__ = [
     "UnifiedLLMGateway",
@@ -399,15 +399,16 @@ class UnifiedLLMGateway:
 
         async with self._provider_errors("anthropic", resolved.api_model):
             client = self._get_anthropic_client()
-            stream = await client.messages.create(
-                model=resolved.api_model,
-                max_tokens=self._anthropic_max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-                stream=True,
-                # anthropic>=2 removed `temperature` from the typed signature; the
-                # API still accepts it, so send it on the wire for all SDK versions.
-                extra_body={"temperature": temperature},
-            )
+            request: dict[str, Any] = {
+                "model": resolved.api_model,
+                "max_tokens": self._anthropic_max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": True,
+            }
+            # Newer Claude models (5.x) reject `temperature` with a 400; only send it when supported.
+            if resolved.supports_temperature:
+                request["extra_body"] = {"temperature": temperature}
+            stream = await client.messages.create(**request)
             try:
                 async for event in stream:
                     etype = event.type
@@ -627,6 +628,9 @@ def _translate_sdk_error(exc: Any, provider: Provider, sdk: Any, secrets: tuple[
 
 if __name__ == "__main__":
     import sys
+    from dotenv import find_dotenv, load_dotenv
+
+    load_dotenv(find_dotenv(usecwd=True))  
 
     async def _demo() -> None:
         logging.basicConfig(level=logging.INFO)

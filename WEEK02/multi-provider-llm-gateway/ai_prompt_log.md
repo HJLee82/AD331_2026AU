@@ -80,4 +80,76 @@ To try it: pip install openai anthropic tiktoken pydantic, set OPENAI_API_KEY an
 - **How found:** Checked Anthropic's model deprecations page; `claude-haiku-5-5` was rejected as UnsupportedModelError.
 - **Fix:** Replaced them with `claude-sonnet-5-5` and `claude-haiku-5-5` at current prices.
   Documented Haiku 5.5's tiered pricing (>100K tokens) as a known limitation.
-- **Diff:** (paste output of `git diff src/pricing.py`)
+- **Diff:** diff --git a/WEEK02/multi-provider-llm-gateway/src/pricing.py b/WEEK02/multi-provider-llm-gateway/src/pricing.py
+index 649717f..84ea96b 100644
+--- a/WEEK02/multi-provider-llm-gateway/src/pricing.py
++++ b/WEEK02/multi-provider-llm-gateway/src/pricing.py
+@@ -61,22 +61,25 @@ MODEL_REGISTRY: Final[Mapping[str, ModelSpec]] = MappingProxyType(
+             pricing=ModelPricing(D("2.50"), D("10.00"), cached_input_per_mtok=D("1.25")),
+         ),
+         # ---- Anthropic ---------------------------------------------------
+-        "claude-3-5-sonnet": ModelSpec(
++        # claude-3-5-sonnet (retired 2025-10-28) and claude-3-5-haiku (retired 2026-02-19)
++        # were replaced with current models. Prices checked 2026-11-04.
++        "claude-sonnet-5-5": ModelSpec(
+             provider="anthropic",
+-            api_model="claude-3-5-sonnet-latest",
+-            pricing=ModelPricing(D("3.00"), D("15.00"), cached_input_per_mtok=D("0.30"), cache_write_per_mtok=D("3.75")),
++            api_model="claude-sonnet-5-5",
++            pricing=ModelPricing(D("2.00"), D("10.00"), cached_input_per_mtok=D("0.20"), cache_write_per_mtok=D("2.50")),
+         ),
+-        "claude-3-5-haiku": ModelSpec(
++        # NOTE: Haiku 5.5 has tiered pricing. Rates below are for prompts <= 100K tokens.
++        # Prompts > 100K tokens cost $0.50 in / $2.50 out per MTok (not modeled here).
++        "claude-haiku-5-5": ModelSpec(
+             provider="anthropic",
+-            api_model="claude-3-5-haiku-latest",
+-            pricing=ModelPricing(D("0.80"), D("4.00"), cached_input_per_mtok=D("0.08"), cache_write_per_mtok=D("1.00")),
++            api_model="claude-haiku-5-5",
++            pricing=ModelPricing(D("0.10"), D("0.50"), cached_input_per_mtok=D("0.01"), cache_write_per_mtok=D("0.125")),
+         ),
+     }
+ )
+ 
+ # Accept pinned snapshots of registered models, e.g. "gpt-4o-2024-08-06",
+-# "claude-3-5-haiku-20241022", "claude-3-5-sonnet-latest". Anything else
+-# (e.g. "gpt-4o-audio-preview") is rejected rather than silently mis-priced.
++# "claude-3-5-haiku-20241022", "claude-3-5-sonnet-latest". Anything else is rejected rather than silently mis-priced.
+ _SNAPSHOT_SUFFIX: Final = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8}|latest)$")
+
+ ### B2 — Absolute imports break inside the `src` package
+- **Problem:** `gateway.py` used `from pricing import ...` and `from schemas import ...`.
+  Importing the package (`import src.gateway`, as the tests and app must) raised
+  `ModuleNotFoundError: No module named 'pricing'`.
+- **How found:** Ran `python -c "import src.gateway"` from the project root.
+- **Fix:** Switched to relative imports (`from .pricing`, `from .schemas`) and added
+  `[tool.pytest.ini_options] pythonpath = ["."]` so tests resolve `src`.
+- **Diff:**
+```diff
+(git --no-pager diff src/ pyproject.toml | pbcopy)
+```
+ 
+ ### B3 — `.env` file never loaded
+- **Problem:** The gateway reads keys only from `os.environ`, and no code called `load_dotenv()`.
+  With valid keys in `.env`, running the demo failed:
+  `Gateway error: [openai] No OpenAI API key configured (set OPENAI_API_KEY).`
+- **How found:** Ran `uv run python -m src.gateway gpt-4o-mini` after setting up `.env`.
+- **Fix:** Load `.env` at the entry point (`__main__` demo; later `app.py`), not inside the
+  library class, so the gateway stays side-effect free and tests can control env vars.
+- **Diff:**
+```diff
+(git --no-pager diff src/gateway.py | pbcopy)
+```
+
+### B5 — Claude 5.x rejects `temperature` (AI workaround hid the problem)
+- **Problem:** The draft sent `temperature` via `extra_body` to bypass the Anthropic SDK's
+  signature, which no longer accepts it. Live call to `claude-haiku-5-5` returned
+  `400 invalid_request_error: temperature: Extra inputs are not permitted`.
+- **How found:** First live Anthropic request after fixing B1.
+- **Lesson:** The AI treated an SDK signature change as a typing nuisance instead of a signal
+  that the parameter was removed.
+- **Fix:** Added `supports_temperature` per model; temperature is only sent when supported.
+- **Diff:**
+```diff
+(git --no-pager diff src/ | pbcopy)
+```

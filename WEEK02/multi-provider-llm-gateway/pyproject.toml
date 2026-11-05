@@ -19,3 +19,7 @@ dependencies = [
     "tiktoken>=0.14.0",
     "uvicorn>=0.54.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
