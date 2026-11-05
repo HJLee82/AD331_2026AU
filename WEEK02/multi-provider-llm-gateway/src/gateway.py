@@ -464,10 +464,10 @@ class UnifiedLLMGateway:
 
     def _get_openai_client(self) -> AsyncOpenAI:
         if self._openai is None:
-            if not self._openai_key.get_secret_value().startswith("sk-"):
-                raise AuthenticationError("OPENAI_API_KEY looks malformed (expected prefix 'sk-').", provider="openai")
             if self._openai_key is None:
                 raise AuthenticationError("No OpenAI API key configured (set OPENAI_API_KEY).", provider="openai")
+            if not self._openai_key.get_secret_value().startswith("sk-"):
+                raise AuthenticationError("OPENAI_API_KEY looks malformed (expected prefix 'sk-').", provider="openai")
             self._openai = AsyncOpenAI(
                 api_key=self._openai_key.get_secret_value(),
                 timeout=self._timeout,
@@ -477,10 +477,10 @@ class UnifiedLLMGateway:
 
     def _get_anthropic_client(self) -> AsyncAnthropic:
         if self._anthropic is None:
-            if not self._anthropic_key.get_secret_value().startswith("sk-ant-"):
-                raise AuthenticationError("ANTHROPIC_API_KEY looks malformed (expected prefix 'sk-ant-').", provider="anthropic")
             if self._anthropic_key is None:
                 raise AuthenticationError("No Anthropic API key configured (set ANTHROPIC_API_KEY).", provider="anthropic")
+            if not self._anthropic_key.get_secret_value().startswith("sk-ant-"):
+                raise AuthenticationError("ANTHROPIC_API_KEY looks malformed (expected prefix 'sk-ant-').", provider="anthropic")
             self._anthropic = AsyncAnthropic(
                 api_key=self._anthropic_key.get_secret_value(),
                 timeout=self._timeout,

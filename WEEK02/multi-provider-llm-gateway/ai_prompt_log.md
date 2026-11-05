@@ -101,7 +101,32 @@ To try it: pip install openai anthropic tiktoken pydantic, set OPENAI_API_KEY an
   Haiku 5.5's tiered pricing (>100K-token prompts) is documented as a known limitation.
 - **Diff:**
 ```diff
-(paste)
+--- a/WEEK02/multi-provider-llm-gateway/src/pricing.py
++++ b/WEEK02/multi-provider-llm-gateway/src/pricing.py
+@@ -62,13 +62,17 @@
+         ),
+         # ---- Anthropic ---------------------------------------------------
+-        "claude-3-5-sonnet": ModelSpec(
++        # claude-3-5-sonnet (retired 2025-10-28) and claude-3-5-haiku (retired 2026-02-19)
++        # were replaced with current models. Prices checked 2026-11-04.
++        "claude-sonnet-5-5": ModelSpec(
+             provider="anthropic",
+-            api_model="claude-3-5-sonnet-latest",
+-            pricing=ModelPricing(D("3.00"), D("15.00"), cached_input_per_mtok=D("0.30"), cache_write_per_mtok=D("3.75")),
++            api_model="claude-sonnet-5-5",
++            pricing=ModelPricing(D("2.00"), D("10.00"), cached_input_per_mtok=D("0.20"), cache_write_per_mtok=D("2.50")),
+         ),
+-        "claude-3-5-haiku": ModelSpec(
++        # NOTE: Haiku 5.5 has tiered pricing. Rates below are for prompts <= 100K tokens.
++        # Prompts > 100K tokens cost $0.50 in / $2.50 out per MTok (not modeled here).
++        "claude-haiku-5-5": ModelSpec(
+             provider="anthropic",
+-            api_model="claude-3-5-haiku-latest",
+-            pricing=ModelPricing(D("0.80"), D("4.00"), cached_input_per_mtok=D("0.08"), cache_write_per_mtok=D("1.00")),
++            api_model="claude-haiku-5-5",
++            pricing=ModelPricing(D("0.10"), D("0.50"), cached_input_per_mtok=D("0.01"), cache_write_per_mtok=D("0.125")),
+         ),
+     }
 ```
 
 #### B2 — Absolute imports inside the `src` package
@@ -110,7 +135,35 @@ To try it: pip install openai anthropic tiktoken pydantic, set OPENAI_API_KEY an
   Demo now runs as `python -m src.gateway`.
 - **Diff:**
 ```diff
-(paste)
+--- a/WEEK02/multi-provider-llm-gateway/src/pricing.py
++++ b/WEEK02/multi-provider-llm-gateway/src/pricing.py
+@@ -16,5 +16,5 @@
+ from typing import Final, Mapping, Optional
+ 
+-from schemas import Provider
++from .schemas import Provider
+ 
+ _PER_MILLION: Final = Decimal(1_000_000)
+--- a/WEEK02/multi-provider-llm-gateway/src/gateway.py
++++ b/WEEK02/multi-provider-llm-gateway/src/gateway.py
+@@ -30,6 +30,6 @@
+ from pydantic import SecretStr
+ 
+-from pricing import ResolvedModel, calculate_cost, resolve_model, supported_models
+-from schemas import ChunkTelemetry, Provider, StreamChunk, UsageSource
++from .pricing import ResolvedModel, calculate_cost, resolve_model, supported_models
++from .schemas import ChunkTelemetry, Provider, StreamChunk, UsageSource
+ 
+ __all__ = [
+--- a/WEEK02/multi-provider-llm-gateway/pyproject.toml
++++ b/WEEK02/multi-provider-llm-gateway/pyproject.toml
+@@ -20,2 +20,6 @@
+     "uvicorn>=0.54.0",
+ ]
++
++[tool.pytest.ini_options]
++pythonpath = ["."]
++asyncio_mode = "auto"
 ```
 
 #### B3 — `.env` never loaded
@@ -119,7 +172,16 @@ To try it: pip install openai anthropic tiktoken pydantic, set OPENAI_API_KEY an
   so the gateway has no hidden side effects and tests can control env vars.
 - **Diff:**
 ```diff
-(paste)
+--- a/WEEK02/multi-provider-llm-gateway/src/gateway.py
++++ b/WEEK02/multi-provider-llm-gateway/src/gateway.py
+@@ -628,4 +628,7 @@
+ if __name__ == "__main__":
+     import sys
++    from dotenv import find_dotenv, load_dotenv
++
++    load_dotenv(find_dotenv(usecwd=True))
+ 
+     async def _demo() -> None:
 ```
 
 #### B4 — Names don't match the spec; malformed keys not detected
@@ -131,7 +193,70 @@ To try it: pip install openai anthropic tiktoken pydantic, set OPENAI_API_KEY an
   `extra="forbid"`: Pydantic raised `ValidationError` instead of silently dropping a field.
 - **Diff:**
 ```diff
-(paste)
+--- a/WEEK02/multi-provider-llm-gateway/src/schemas.py
++++ b/WEEK02/multi-provider-llm-gateway/src/schemas.py
+@@ -27,8 +27,8 @@
+ 
+     latency_s: float = Field(ge=0, description="Wall-clock seconds from request start to stream end.")
+-    ttft_s: Optional[float] = Field(default=None, ge=0, description="Seconds until the first text token. None if no text was produced.")
++    ttft_ms: Optional[float] = Field(default=None, ge=0, description="Milliseconds until the first text token. None if no text was produced.")
+     tokens_per_second: float = Field(ge=0, description="Decode throughput: output tokens / (end - first token).")
+ 
+-    cost_usd: float = Field(ge=0, description="Total request cost in USD, from the static pricing table.")
++    total_cost_usd: float = Field(ge=0, description="Total request cost in USD, from the static pricing table.")
+ 
+     usage_source: UsageSource = Field(description="'provider' if counts came from the API, 'estimated' if reconstructed locally.")
+--- a/WEEK02/multi-provider-llm-gateway/src/gateway.py
++++ b/WEEK02/multi-provider-llm-gateway/src/gateway.py
+@@ -40,5 +40,5 @@
+     "GatewayProviderError",
+     "RateLimitExceededError",
+-    "InvalidAPIKeyError",
++    "AuthenticationError",
+     "ProviderConnectionError",
+     "ProviderTimeoutError",
+@@ -122,5 +122,5 @@
+ 
+ 
+-class InvalidAPIKeyError(GatewayProviderError):
++class AuthenticationError(GatewayProviderError):
+     """Missing, invalid, or insufficiently-permissioned API key."""
+ 
+@@ -466,5 +466,7 @@
+         if self._openai is None:
+             if self._openai_key is None:
+-                raise InvalidAPIKeyError("No OpenAI API key configured (set OPENAI_API_KEY).", provider="openai")
++                raise AuthenticationError("No OpenAI API key configured (set OPENAI_API_KEY).", provider="openai")
++            if not self._openai_key.get_secret_value().startswith("sk-"):
++                raise AuthenticationError("OPENAI_API_KEY looks malformed (expected prefix 'sk-').", provider="openai")
+             self._openai = AsyncOpenAI(
+                 api_key=self._openai_key.get_secret_value(),
+@@ -477,5 +479,7 @@
+         if self._anthropic is None:
+             if self._anthropic_key is None:
+-                raise InvalidAPIKeyError("No Anthropic API key configured (set ANTHROPIC_API_KEY).", provider="anthropic")
++                raise AuthenticationError("No Anthropic API key configured (set ANTHROPIC_API_KEY).", provider="anthropic")
++            if not self._anthropic_key.get_secret_value().startswith("sk-ant-"):
++                raise AuthenticationError("ANTHROPIC_API_KEY looks malformed (expected prefix 'sk-ant-').", provider="anthropic")
+             self._anthropic = AsyncAnthropic(
+                 api_key=self._anthropic_key.get_secret_value(),
+@@ -535,7 +539,7 @@
+             cache_write_tokens=cache_write_tokens,
+             latency_s=round(latency, 4),
+-            ttft_s=round(ttft, 4) if ttft is not None else None,
++            ttft_ms=round(ttft * 1000, 1) if ttft is not None else None,
+             tokens_per_second=round(tps, 2),
+-            cost_usd=float(cost),
++            total_cost_usd=float(cost),
+             usage_source=usage_source,
+             prompt_tokens_estimate=prompt_estimate,
+@@ -610,5 +614,5 @@
+     if isinstance(exc, (sdk.AuthenticationError, sdk.PermissionDeniedError)):
+         # Deliberately do not echo the provider message: it may include a key fragment.
+-        return InvalidAPIKeyError("Authentication with provider failed; check the API key and its permissions.", **common)
++        return AuthenticationError("Authentication with provider failed; check the API key and its permissions.", **common)
+     if isinstance(exc, sdk.APITimeoutError):
+         return ProviderTimeoutError("Provider request timed out.", retryable=True, **common)
 ```
 
 #### B5 — AI workaround hid a removed parameter
@@ -142,7 +267,72 @@ To try it: pip install openai anthropic tiktoken pydantic, set OPENAI_API_KEY an
 - **Lesson:** An SDK signature change is information, not an obstacle to route around.
 - **Diff:**
 ```diff
-(paste)
+--- a/WEEK02/multi-provider-llm-gateway/src/pricing.py
++++ b/WEEK02/multi-provider-llm-gateway/src/pricing.py
+@@ -35,4 +35,5 @@
+     api_model: str  # ID sent to the API when the caller uses the bare registry name
+     pricing: ModelPricing
++    supports_temperature: bool = True
+ 
+ 
+@@ -44,4 +45,5 @@
+     api_model: str
+     pricing: ModelPricing
++    supports_temperature: bool = True
+ 
+ 
+@@ -67,4 +69,5 @@
+             provider="anthropic",
+             api_model="claude-sonnet-5-5",
++            supports_temperature=False,
+             pricing=ModelPricing(D("2.00"), D("10.00"), cached_input_per_mtok=D("0.20"), cache_write_per_mtok=D("2.50")),
+         ),
+@@ -74,4 +77,5 @@
+             provider="anthropic",
+             api_model="claude-haiku-5-5",
++            supports_temperature=False,
+             pricing=ModelPricing(D("0.10"), D("0.50"), cached_input_per_mtok=D("0.01"), cache_write_per_mtok=D("0.125")),
+         ),
+@@ -94,5 +98,5 @@
+     spec = MODEL_REGISTRY.get(key)
+     if spec is not None:
+-        return ResolvedModel(model, key, spec.provider, spec.api_model, spec.pricing)
++        return ResolvedModel(model, key, spec.provider, spec.api_model, spec.pricing, spec.supports_temperature)
+ 
+     match = _SNAPSHOT_SUFFIX.search(key)
+@@ -102,5 +106,5 @@
+         if spec is not None:
+             # Caller pinned a specific snapshot: send it to the API verbatim.
+-            return ResolvedModel(model, base, spec.provider, key, spec.pricing)
++            return ResolvedModel(model, base, spec.provider, key, spec.pricing, spec.supports_temperature)
+ 
+     raise KeyError(model)
+--- a/WEEK02/multi-provider-llm-gateway/src/gateway.py
++++ b/WEEK02/multi-provider-llm-gateway/src/gateway.py
+@@ -400,13 +400,14 @@
+         async with self._provider_errors("anthropic", resolved.api_model):
+             client = self._get_anthropic_client()
+-            stream = await client.messages.create(
+-                model=resolved.api_model,
+-                max_tokens=self._anthropic_max_tokens,
+-                messages=[{"role": "user", "content": prompt}],
+-                stream=True,
+-                # anthropic>=2 removed `temperature` from the typed signature; the
+-                # API still accepts it, so send it on the wire for all SDK versions.
+-                extra_body={"temperature": temperature},
+-            )
++            request: dict[str, Any] = {
++                "model": resolved.api_model,
++                "max_tokens": self._anthropic_max_tokens,
++                "messages": [{"role": "user", "content": prompt}],
++                "stream": True,
++            }
++            # Newer Claude models (5.x) reject `temperature` with a 400; only send it when supported.
++            if resolved.supports_temperature:
++                request["extra_body"] = {"temperature": temperature}
++            stream = await client.messages.create(**request)
+             try:
+                 async for event in stream:
 ```
 
 ### 4.3 Verified results after fixes
