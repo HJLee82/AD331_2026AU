@@ -170,6 +170,7 @@ class ConfigReport(BaseModel):
     num_chunks: int
     avg_chunk_tokens: float
     index_time_s: float
+    broken_fence_chunks: int = 0  # chunks whose code block was cut in half
     metrics: dict[str, dict[str, float]]  # {"all"|"exact"|"conceptual": {"hit@5": ..}}
     latency_ms: dict[str, float]
     per_query: list[dict]
@@ -250,6 +251,7 @@ class BenchmarkRunner:
             num_chunks=len(chunks),
             avg_chunk_tokens=statistics.fmean(c.metadata["token_count"] for c in chunks) if chunks else 0.0,
             index_time_s=index_time,
+            broken_fence_chunks=sum(bool(c.metadata.get("broken_fence")) for c in chunks),
             metrics={b: {m: statistics.fmean(v) for m, v in d.items()} for b, d in sums.items()},
             latency_ms=latency,
             per_query=per_query,
@@ -302,12 +304,12 @@ def format_report(reports: Sequence[ConfigReport], ks: Sequence[int]) -> str:
     """Markdown tables: overall metrics, then MRR/Hit split by query type."""
     lines: list[str] = []
     cols = [f"{m}@{k}" for k in ks for m in ("hit", "recall", "mrr")]
-    header = ["config", "chunks", "avg tok", *cols, "p50 ms", "p95 ms"]
+    header = ["config", "chunks", "avg tok", "split fences", *cols, "p50 ms", "p95 ms"]
     lines += ["## Overall", "", "| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     for r in reports:
         m = r.metrics["all"]
         lines.append("| " + " | ".join([
-            r.name, str(r.num_chunks), f"{r.avg_chunk_tokens:.0f}",
+            r.name, str(r.num_chunks), f"{r.avg_chunk_tokens:.0f}", str(r.broken_fence_chunks),
             *(f"{m[c]:.3f}" for c in cols),
             f"{r.latency_ms['p50']:.1f}", f"{r.latency_ms['p95']:.1f}",
         ]) + " |")

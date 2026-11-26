@@ -1283,3 +1283,73 @@ if __name__ == "__main__":
 ```
 
 ## Audit Findings
+
+I ran the AI draft against my 12-file FastAPI corpus and 15 labeled queries, then checked each of the 5 required audit points.
+
+| # | Audit point | Result |
+|---|---|---|
+| 1 | Ground truth tied to chunk index | ✅ Passed: labels are header anchors (`relevant_sections`), so they survive any chunk size. `validate_labels` reports 0 missing anchors. |
+| 2 | Cosine distance vs. similarity inversion | ✅ Passed: the collection is created in cosine space and the score is `1 - distance`. I checked this with a 2-vector test: distance 0.4 → similarity 0.6 = cos θ. |
+| 3 | BM25 tokenization asymmetry | ✅ Passed: corpus and queries both go through the same `bm25_tokenize()`. |
+| 4 | Code block slicing | ⚠️ Found in `FixedSizeChunker` (Finding 2). `StructureAwareChunker` is safe: even the fake header `# Some more code` inside a Python block in `debugging.md` is correctly ignored. |
+| 5 | MRR math | ✅ Passed: ranks beyond K score 0, a missed query scores 0.0, and there is no division by zero. |
+
+---
+
+### Finding 1: Large chunks get relevance credit for sections they only touch (benchmark bias)
+
+**What was wrong:** `_StructureIndex.annotate()` put every section a chunk overlapped into `section_anchors`, even when the overlap was a single line. `matched_anchors()` then counted the chunk as correct for all of them. Bigger chunks touch more sections, so they collected "free" hits and inflated Hit Rate for `dense_fixed_1024`.
+
+**Evidence (before → after the fix):**
+
+| Config | Share of corpus counted as "correct" per query, before | After |
+|---|---|---|
+| structure | 1.1% | 1.1% |
+| fixed 256 | 2.1% | 1.5% |
+| fixed 1024 | 4.3% | 3.5% |
+
+**Before:**
+```python
+home = self.section_at(start_line)
+lo = max(bisect.bisect_right(self._starts, start_line) - 1, 0)
+hi = bisect.bisect_right(self._starts, end_line)
+overlapping = [s.anchor for s in self.sections[lo:hi] if s.anchor]
+```
+
+**After:** a section is credited only if the overlap is at least 50% of the section or at least 50% of the chunk.
+```python
+for s in self.sections[lo:hi]:
+    overlap = min(end_line, s.end_line) - max(start_line, s.start_line) + 1
+    if overlap <= 0:
+        continue
+    sec_len = s.end_line - s.start_line + 1
+    if overlap / sec_len >= min_coverage or overlap / chunk_len >= min_coverage:
+        credited.append((overlap, s))
+overlapping = [s.anchor for _, s in credited if s.anchor]
+```
+
+**Why both conditions:** "≥50% of the section" is fair to big chunks that fully contain small sections. "≥50% of the chunk" is fair to small chunks inside one long section, which can never hold half of it.
+
+---
+
+### Finding 2: The fixed-size chunker cuts code blocks in half, and the draft never measured it
+
+**What was wrong:** `FixedSizeChunker` slices purely by token count, so windows end in the middle of fenced code blocks. With my corpus, 13 chunks at 256 tokens and 3 at 1024 tokens contain an unmatched code fence. The draft didn't flag or report this anywhere.
+
+**Decision:** I kept the fixed chunker naive on purpose because it is the baseline. Instead, I made the damage visible so the benchmark can compare it with the structure-aware chunker (0 split fences).
+
+**Before:**
+```python
+meta.update(token_count=end - start, chunker=self.name)
+```
+
+**After:**
+```python
+meta.update(
+    token_count=end - start,
+    chunker=self.name,
+    # Odd number of ``` fences = this window cut a code block in half.
+    broken_fence=_FENCE_LINE_RE.findall(content).__len__() % 2 == 1,
+)
+```
+`ConfigReport` now has a `broken_fence_chunks` count, and the report table has a **split fences** column.

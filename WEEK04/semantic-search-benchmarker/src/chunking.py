@@ -54,6 +54,7 @@ _HEADER_RE = re.compile(
 )
 # Opening/closing fence: ``` or ~~~ (3+), optionally indented up to 3 spaces.
 _FENCE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})")
+_FENCE_LINE_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})", re.MULTILINE)
 
 
 # --------------------------------------------------------------------------- #
@@ -211,12 +212,34 @@ class _StructureIndex:
         i = bisect.bisect_right(self._starts, line) - 1
         return self.sections[i] if i >= 0 else None
 
-    def annotate(self, start_line: int, end_line: int) -> dict[str, Any]:
-        """Structural metadata for a chunk spanning [start_line, end_line]."""
-        home = self.section_at(start_line)
+    def annotate(
+        self, start_line: int, end_line: int, min_coverage: float = 0.5
+    ) -> dict[str, Any]:
+        """Structural metadata for a chunk spanning [start_line, end_line].
+
+        A section is credited only if the overlap is at least ``min_coverage``
+        of the section (chunk holds most of it) OR of the chunk (chunk is
+        mostly about it). Merely touching a section is not enough, so large
+        chunks cannot collect credit for every section they brush against.
+        """
         lo = max(bisect.bisect_right(self._starts, start_line) - 1, 0)
         hi = bisect.bisect_right(self._starts, end_line)
-        overlapping = [s.anchor for s in self.sections[lo:hi] if s.anchor]
+        chunk_len = end_line - start_line + 1
+        credited: list[tuple[int, Section]] = []
+        for s in self.sections[lo:hi]:
+            overlap = min(end_line, s.end_line) - max(start_line, s.start_line) + 1
+            if overlap <= 0:
+                continue
+            sec_len = s.end_line - s.start_line + 1
+            if overlap / sec_len >= min_coverage or overlap / chunk_len >= min_coverage:
+                credited.append((overlap, s))
+        overlapping = [s.anchor for _, s in credited if s.anchor]
+        # Ancestry: keep the section the chunk starts in if it earned credit;
+        # otherwise use the section the chunk is mostly about.
+        first = self.section_at(start_line)
+        if credited and all(s is not first for _, s in credited):
+            first = max(credited, key=lambda t: t[0])[1]
+        home = first
         return {
             "start_line": start_line,
             "end_line": end_line,
@@ -313,7 +336,12 @@ class FixedSizeChunker:
                 # Don't let a trailing newline push end_line onto the next line.
                 last_char = c1 - 1 if c1 > c0 else c0
                 meta = structure.annotate(to_line(c0), to_line(last_char))
-                meta.update(token_count=end - start, chunker=self.name)
+                meta.update(
+                    token_count=end - start,
+                    chunker=self.name,
+                    # Odd number of ``` fences = this window cut a code block in half.
+                    broken_fence=_FENCE_LINE_RE.findall(content).__len__() % 2 == 1,
+                )
                 chunks.append(
                     DocumentChunk(
                         chunk_id=_make_id(parent_doc, self.name, n),
