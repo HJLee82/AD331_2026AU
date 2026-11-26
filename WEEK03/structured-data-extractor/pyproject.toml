@@ -1,0 +1,31 @@
+[project]
+name = "structured-data-extractor"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Hyejin Lee", email = "wlslsue@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "fastapi>=0.165.0",
+    "instructor>=1.17.0",
+    "json-repair>=0.64.9",
+    "openai>=3.3.0",
+    "pydantic>=2.14.4",
+    "pypdf>=7.1.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "python-dateutil>=4.0.0",
+    "python-dotenv>=1.2.4",
+    "streamlit>=1.67.0",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+structured-data-extractor = "structured_data_extractor:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
