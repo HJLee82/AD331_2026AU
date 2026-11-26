@@ -5,29 +5,44 @@ Pipeline
 --------
     raw PDF / HTML ──► text_from_pdf / text_from_html ──► extract_with_retry
                                                             │
-      Stage 1  constrained decoding (json_schema, strict) ──┤ valid → SUCCESS
-      Stage 2  reflection repair: source + bad JSON +       │
-               err['loc'] / err['msg'] → re-prompt  ────────┤ valid → REPAIRED_VIA_REFLECTION
+      Stage 1  schema-forced tool use (Anthropic) ──────────┤ valid → SUCCESS
+      Stage 2  reflection repair: bounded source snippet +  │
+               bad JSON + err['loc'] / err['msg'] → re-prompt ┤ valid → REPAIRED_VIA_REFLECTION
       Stage 3  json_repair + normalise → partial → DLQ ─────┘ valid → REPAIRED_VIA_HEURISTIC
                                                               else  → DLQ_FAILED
 
-Retry budget: 1 initial call + up to ``max_retries`` reflection calls.
+Retry budget: 1 initial call + up to ``max_retries`` reflection calls,
+with exponential backoff (+ jitter) before every retry.
+
+Provider: Anthropic. The model is forced to call one tool whose
+``input_schema`` is the InvoiceExtraction JSON schema, so it must answer with
+schema-shaped JSON (Anthropic's tool-use JSON mode).
 
 Why the native client and not ``instructor``: we need the *raw* malformed
 payload to feed back into the reflection prompt and to json_repair later.
-``client.beta.chat.completions.parse`` validates internally and discards it.
+``instructor`` validates internally and discards it.
+
+Audit fixes (see ai_prompt_log.md):
+  1. Reflection retries send a bounded snippet (REFLECTION_MAX_CHARS), not the
+     full document, to stop token bloat on every retry.
+  2. Exponential backoff + jitter between retries (injectable ``sleep`` for tests).
+  3. API error text is redacted before it reaches error_log / the UI, because
+     OpenAI 401 messages echo part of the API key.
 """
 
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
+import random
 import re
+import time
 from pathlib import Path
-from typing import Any, BinaryIO, Optional, Union
+from typing import Any, BinaryIO, Callable, Optional, Union
 
-import openai
+import anthropic
 from bs4 import BeautifulSoup, Comment
 from pydantic import ValidationError
 
@@ -36,26 +51,60 @@ from .schemas import (
     ExtractionResult,
     InvoiceExtraction,
     format_validation_errors,
-    to_strict_json_schema,
 )
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-4o-mini"
+# Confirm the current model ID on Anthropic's models page before you run this.
+DEFAULT_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5")
+MAX_OUTPUT_TOKENS = 4096
+TOOL_NAME = "record_invoice"
 # ~15k tokens of context; plenty for invoices, bounds cost on pathological input.
 DEFAULT_MAX_CONTEXT_CHARS = 60_000
+# [AUDIT FIX 1] Reflection retries get a much smaller window than attempt 1.
+REFLECTION_MAX_CHARS = 6_000
+# [AUDIT FIX 2] Backoff schedule: 0.5s, 1s, 2s, ... capped at 8s, plus jitter.
+BACKOFF_BASE_SECONDS = 0.5
+BACKOFF_MAX_SECONDS = 8.0
 
 # Errors that won't fix themselves on retry (bad key, rejected schema, …).
 _NON_RETRYABLE_API_ERRORS = (
-    openai.BadRequestError,
-    openai.AuthenticationError,
-    openai.PermissionDeniedError,
-    openai.NotFoundError,
+    anthropic.BadRequestError,
+    anthropic.AuthenticationError,
+    anthropic.PermissionDeniedError,
+    anthropic.NotFoundError,
 )
+
+# [AUDIT FIX 3] Matches API keys (sk-ant-..., sk-proj-...), including partially masked ones.
+_SECRET_RE = re.compile(r"sk-[A-Za-z0-9_\-*]{6,}")
 
 
 class LLMRefusalError(RuntimeError):
     """The model returned a structured-output refusal instead of content."""
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+def _redact(text: str) -> str:
+    """Remove anything that looks like an API key before it is logged or shown."""
+    return _SECRET_RE.sub("sk-***REDACTED***", text)
+
+
+def _bound_text(text: str, limit: int) -> str:
+    """Keep head + tail (totals sit at the end) within ``limit`` chars."""
+    if len(text) <= limit:
+        return text
+    head, tail = text[: limit * 2 // 3], text[-(limit // 3):]
+    omitted = len(text) - len(head) - len(tail)
+    return f"{head}\n\n[... {omitted} characters omitted ...]\n\n{tail}"
+
+
+def _backoff_seconds(retry_number: int) -> float:
+    """retry_number starts at 1 → 0.5s, 1s, 2s, 4s, 8s (cap) + up to 0.25s jitter."""
+    delay = min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2 ** (retry_number - 1))
+    return delay + random.uniform(0, 0.25)
 
 
 # --------------------------------------------------------------------------- #
@@ -192,21 +241,25 @@ class InvoiceExtractor:
         dlq_dir: Union[str, Path, None] = None,
         request_timeout: float = 60.0,
         max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+        sleep: Callable[[float], None] = time.sleep,  # [AUDIT FIX 2] tests pass a no-op
     ) -> None:
         # The SDK already retries 429/5xx/connection errors with exponential
         # backoff (max_retries). Our loop only handles *semantic* failures.
-        self._client = client or openai.OpenAI(max_retries=3, timeout=request_timeout)
+        # Reads ANTHROPIC_API_KEY from the environment.
+        self._client = client or anthropic.Anthropic(max_retries=3, timeout=request_timeout)
         self.model = model
         self.dlq_dir = Path(dlq_dir or os.getenv("INVOICE_DLQ_DIR", "dlq"))
         self.max_context_chars = max_context_chars
-        self._response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "InvoiceExtraction",
-                "strict": True,
-                "schema": to_strict_json_schema(InvoiceExtraction),
-            },
-        }
+        self._sleep = sleep
+        # One tool whose input schema IS the invoice schema; tool_choice forces it.
+        self._tools = [
+            {
+                "name": TOOL_NAME,
+                "description": "Record the extracted invoice fields.",
+                "input_schema": InvoiceExtraction.model_json_schema(),
+            }
+        ]
+        self._tool_choice = {"type": "tool", "name": TOOL_NAME}
 
     # ---- public API ------------------------------------------------------- #
 
@@ -228,6 +281,12 @@ class InvoiceExtractor:
         context = self._prepare_context(raw_text, error_log)
 
         while attempts < 1 + max_retries:
+            # [AUDIT FIX 2] Back off before every retry (not before attempt 1).
+            if attempts > 0:
+                delay = _backoff_seconds(attempts)
+                error_log.append(f"[backoff] waiting {delay:.2f}s before attempt {attempts + 1}")
+                self._sleep(delay)
+
             attempts += 1
             is_reflection = last_payload is not None and last_errors is not None
             stage = "reflection" if is_reflection else "initial"
@@ -245,17 +304,18 @@ class InvoiceExtractor:
                 error_log.append(f"{tag} model refused: {exc}")
                 break
             except _NON_RETRYABLE_API_ERRORS as exc:
-                error_log.append(f"{tag} non-retryable API error: {type(exc).__name__}: {exc}")
+                # [AUDIT FIX 3] Redact: 401 messages include part of the key.
+                error_log.append(_redact(f"{tag} non-retryable API error: {type(exc).__name__}: {exc}"))
                 break
-            except openai.APIError as exc:
+            except anthropic.APIError as exc:
                 # Transient errors that outlived the SDK's own retries: spend budget, retry.
-                error_log.append(f"{tag} API error: {type(exc).__name__}: {exc}")
+                error_log.append(_redact(f"{tag} API error: {type(exc).__name__}: {exc}"))
                 continue
 
             if is_reflection:
                 reflections += 1
-            if finish_reason == "length":
-                error_log.append(f"{tag} output truncated (finish_reason=length)")
+            if finish_reason == "max_tokens":
+                error_log.append(f"{tag} output truncated (stop_reason=max_tokens)")
 
             # -- validate ------------------------------------------------- #
             try:
@@ -285,42 +345,50 @@ class InvoiceExtractor:
     # ---- internals -------------------------------------------------------- #
 
     def _call_llm(self, messages: list[dict[str, str]]) -> tuple[str, Optional[str]]:
-        response = self._client.chat.completions.create(
+        """Call Claude with the forced tool; return (raw JSON string, stop_reason)."""
+        response = self._client.messages.create(
             model=self.model,
+            max_tokens=MAX_OUTPUT_TOKENS,
+            system=SYSTEM_PROMPT,
             messages=messages,
-            temperature=0,
-            response_format=self._response_format,
+            tools=self._tools,
+            tool_choice=self._tool_choice,
         )
-        choice = response.choices[0]
-        refusal = getattr(choice.message, "refusal", None)
-        if refusal:
-            raise LLMRefusalError(refusal)
-        return choice.message.content or "", getattr(choice, "finish_reason", None)
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason == "refusal":
+            raise LLMRefusalError("model declined to answer")
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use":
+                # Keep the raw payload as a JSON string for validation / reflection / json_repair.
+                return json.dumps(block.input, ensure_ascii=False), stop_reason
+        # No tool call (e.g. truncated): hand back any text so json_repair can try.
+        text = "".join(getattr(b, "text", "") for b in response.content)
+        return text, stop_reason
 
     def _prepare_context(self, raw_text: str, error_log: list[str]) -> str:
-        """Bound prompt size. Keeps head + tail because totals sit at the end."""
+        """Bound prompt size for attempt 1. Keeps head + tail because totals sit at the end."""
         text = raw_text.strip()
-        limit = self.max_context_chars
-        if len(text) <= limit:
-            return text
-        head, tail = text[: limit * 2 // 3], text[-(limit // 3):]
-        error_log.append(f"[input] document truncated from {len(text)} to ~{limit} chars (head+tail)")
-        return f"{head}\n\n[... {len(text) - len(head) - len(tail)} characters omitted ...]\n\n{tail}"
+        if len(text) > self.max_context_chars:
+            error_log.append(
+                f"[input] document truncated from {len(text)} to ~{self.max_context_chars} chars (head+tail)"
+            )
+        return _bound_text(text, self.max_context_chars)
 
     @staticmethod
     def _initial_messages(context: str) -> list[dict[str, str]]:
+        # Anthropic takes the system prompt as a separate argument (see _call_llm).
         return [
-            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _wrap_document(context)},
         ]
 
     @staticmethod
     def _reflection_messages(context: str, bad_payload: str, errors: list[str]) -> list[dict[str, str]]:
-        # Rebuilt fresh each round (not an ever-growing chat) so cost stays flat
-        # and the model only sees its most recent mistake.
+        # Rebuilt fresh each round (not an ever-growing chat) so the model only
+        # sees its most recent mistake.
+        # [AUDIT FIX 1] Send a bounded snippet, not the full document, on every retry.
+        snippet = _bound_text(context, REFLECTION_MAX_CHARS)
         return [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": _wrap_document(context)},
+            {"role": "user", "content": _wrap_document(snippet)},
             {"role": "assistant", "content": bad_payload},
             {"role": "user", "content": REFLECTION_PROMPT.format(errors="\n".join(f"- {e}" for e in errors))},
         ]
@@ -360,7 +428,7 @@ _default_extractor: Optional[InvoiceExtractor] = None
 
 
 def extract_with_retry(raw_text: str, max_retries: int = 3) -> ExtractionResult:
-    """Extract with a lazily-created default ``InvoiceExtractor`` (reads OPENAI_API_KEY)."""
+    """Extract with a lazily-created default ``InvoiceExtractor`` (reads ANTHROPIC_API_KEY)."""
     global _default_extractor
     if _default_extractor is None:  # benign race: worst case two clients get built
         _default_extractor = InvoiceExtractor()
