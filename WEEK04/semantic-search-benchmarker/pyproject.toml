@@ -1,0 +1,30 @@
+[project]
+name = "semantic-search-benchmarker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Hyejin Lee", email = "wlslsue@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "chromadb>=1.5.9",
+    "numpy>=2.4.6",
+    "openai>=3.59.0",
+    "pandas>=3.1.1",
+    "pydantic>=2.14.4",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "python-dotenv>=1.2.4",
+    "rank-bm25>=0.2.2",
+    "sentence-transformers>=6.3.0",
+    "streamlit>=1.67.0",
+    "tiktoken>=0.14.0",
+]
+
+[project.scripts]
+semantic-search-benchmarker = "semantic_search_benchmarker:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"

@@ -1,0 +1,140 @@
+[
+  {
+    "query_id": "q01",
+    "type": "exact",
+    "source_file": "handling-errors.md",
+    "query": "How do I raise an HTTPException with a 404 status code?",
+    "relevant_sections": [
+      "use-httpexception",
+      "raise-an-httpexception-in-your-code"
+    ]
+  },
+  {
+    "query_id": "q02",
+    "type": "exact",
+    "source_file": "query-params-str-validations.md",
+    "query": "How do I add a regex pattern to a Query parameter?",
+    "relevant_sections": [
+      "add-regular-expressions"
+    ]
+  },
+  {
+    "query_id": "q03",
+    "type": "exact",
+    "source_file": "testing.md",
+    "query": "How do I use TestClient to test my app?",
+    "relevant_sections": [
+      "using-testclient"
+    ]
+  },
+  {
+    "query_id": "q04",
+    "type": "exact",
+    "source_file": "oauth2-jwt.md",
+    "query": "How do I install PyJWT?",
+    "relevant_sections": [
+      "install-pyjwt"
+    ]
+  },
+  {
+    "query_id": "q05",
+    "type": "exact",
+    "source_file": "oauth2-jwt.md",
+    "query": "What is the JWT sub subject claim used for?",
+    "relevant_sections": [
+      "technical-details-about-the-jwt-subject-sub"
+    ]
+  },
+  {
+    "query_id": "q06",
+    "type": "exact",
+    "source_file": "response-model.md",
+    "query": "Does response_model take priority over the return type annotation?",
+    "relevant_sections": [
+      "response-model-priority"
+    ]
+  },
+  {
+    "query_id": "q07",
+    "type": "exact",
+    "source_file": "handling-errors.md",
+    "query": "How do I override the RequestValidationError exception handler?",
+    "relevant_sections": [
+      "override-request-validation-exceptions"
+    ]
+  },
+  {
+    "query_id": "q08",
+    "type": "exact",
+    "source_file": "extra-models.md",
+    "query": "What does **user_in.model_dump() do?",
+    "relevant_sections": [
+      "about-user-in-model-dump"
+    ]
+  },
+  {
+    "query_id": "q09",
+    "type": "conceptual",
+    "source_file": "response-model.md",
+    "query": "How can I stop my API from sending a user's secret fields back in the reply?",
+    "relevant_sections": [
+      "add-an-output-model",
+      "fastapi-data-filtering"
+    ]
+  },
+  {
+    "query_id": "q10",
+    "type": "conceptual",
+    "source_file": "path-params.md",
+    "query": "How do I limit a URL value to only a fixed list of allowed choices?",
+    "relevant_sections": [
+      "predefined-values",
+      "create-an-enum-class"
+    ]
+  },
+  {
+    "query_id": "q11",
+    "type": "conceptual",
+    "source_file": "path-params.md",
+    "query": "Two routes look alike and the wrong one keeps catching my requests. How do I fix it?",
+    "relevant_sections": [
+      "order-matters"
+    ]
+  },
+  {
+    "query_id": "q12",
+    "type": "conceptual",
+    "source_file": "oauth2-jwt.md",
+    "query": "Why is it risky to keep people's login secrets saved as readable text?",
+    "relevant_sections": [
+      "why-use-password-hashing"
+    ]
+  },
+  {
+    "query_id": "q13",
+    "type": "conceptual",
+    "source_file": "debugging.md",
+    "query": "How can I pause my running server and step through it line by line in my editor?",
+    "relevant_sections": [
+      "run-your-code-with-your-debugger"
+    ]
+  },
+  {
+    "query_id": "q14",
+    "type": "conceptual",
+    "source_file": "classes-as-dependencies.md",
+    "query": "Can I build reusable setup logic that endpoints plug into using an object blueprint instead of a function?",
+    "relevant_sections": [
+      "classes-as-dependencies_1"
+    ]
+  },
+  {
+    "query_id": "q15",
+    "type": "conceptual",
+    "source_file": "query-params.md",
+    "query": "What happens if a caller leaves out a value after the question mark that my endpoint insists on?",
+    "relevant_sections": [
+      "required-query-parameters"
+    ]
+  }
+]
