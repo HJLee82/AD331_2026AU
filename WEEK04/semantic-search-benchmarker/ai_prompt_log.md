@@ -1353,3 +1353,28 @@ meta.update(
 )
 ```
 `ConfigReport` now has a `broken_fence_chunks` count, and the report table has a **split fences** column.
+
+---
+
+### Finding 3: The embedding cache crashes inside Streamlit (SQLite thread check)
+
+**What was wrong:** `EmbeddingCache` opened SQLite with the default `check_same_thread=True`. Streamlit runs each rerun on a different thread, and `@st.cache_resource` reuses the same retriever, and so the same SQLite connection, across reruns. The first rerun builds the index fine. Clicking **Run Benchmark** re-indexes from a new thread and raises:
+
+```
+sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread.
+```
+
+I reproduced it by calling `put_many()` from a second thread. It fails before the fix and passes after.
+
+**Before:**
+```python
+self._db = sqlite3.connect(str(path))
+```
+
+**After:**
+```python
+# check_same_thread=False: Streamlit runs each rerun on a different thread,
+# and the cached retriever reuses this connection across reruns.
+self._db = sqlite3.connect(str(path), check_same_thread=False)
+```
+This is safe here because the app is single-user and the cache only runs one write at a time.

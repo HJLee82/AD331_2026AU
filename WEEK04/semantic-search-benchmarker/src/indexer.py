@@ -126,7 +126,9 @@ class EmbeddingCache:
 
     def __init__(self, path: str | Path) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(path))
+        # check_same_thread=False: Streamlit runs each rerun on a different thread,
+        # and the cached retriever reuses this connection across reruns.
+        self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS emb (key TEXT PRIMARY KEY, vec BLOB NOT NULL)"
         )
