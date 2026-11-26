@@ -883,4 +883,149 @@ def run_heuristic_fallback(
 ```
 
 ## 4. Audit Findings
-(Step 4 — each finding: Bug → Why it matters → Before/After diff)
+## 4. Audit Findings
+
+**Summary:** The AI draft was well structured (Pydantic v2 throughout, a real DLQ, a date pre-parser), but it **could not run against my schema**, **re-sent the full document on every retry**, **had no backoff**, and **could leak part of an API key into the UI**. I also switched the provider from OpenAI to Anthropic to match the key I have.
+
+### ✅ Required checks that passed
+
+| Check (from the assignment) | Result | Evidence |
+|---|---|---|
+| Pydantic v1 vs v2 syntax | ✅ Pass | Uses `model_validate_json`, `model_fields`, `TypeAdapter`. No `@validator`, no `.dict()`. |
+| Silent all-`None` fallback | ✅ Pass | `run_heuristic_fallback` writes a DLQ record and returns `DLQ_FAILED` with partial data, never a half-empty "success". |
+| Date coercion fragility | ✅ Pass | `parse_loose_date` in `fallback.py`, plus a `mode="before"` date validator in my `schemas.py`. |
+
+---
+
+### Finding 1: Context stuffing in the reflection loop *(required check: ❌ Fail)*
+
+**Bug:** `_reflection_messages` re-sent the whole document (up to 60,000 chars ≈ 15k tokens) on every retry.
+**Why it matters:** 1 initial call + 3 retries = up to ~60k input tokens for one bad invoice. Cost and latency grow with every retry, and the assignment explicitly asks for a bounded context window on retries.
+
+**Before**
+```python
+{"role": "user", "content": _wrap_document(context)},
+```
+
+**After**
+```python
+REFLECTION_MAX_CHARS = 6_000
+
+snippet = _bound_text(context, REFLECTION_MAX_CHARS)   # head + tail, totals kept
+{"role": "user", "content": _wrap_document(snippet)},
+```
+**Verified by:** `test_reflection_prompt_is_bounded`
+
+---
+
+### Finding 2: Contract mismatch crashes the pipeline at Stage 3
+
+**Bug:** The draft imported `format_validation_errors` and `to_strict_json_schema` (not defined anywhere) and returned `execution_status="REPAIRED_VIA_HEURISTIC"`, `partial_data` and `dlq_path`, none of which exist on the `ExtractionResult` contract in the prompt.
+**Why it matters:** `ImportError` on startup. Even after defining the helpers, the first document that reaches Stage 3 raises a `ValidationError` while *building the result*, which crashes the worker. That breaks the "route to DLQ without crashing" requirement.
+
+**Before**
+```python
+from .schemas import (..., format_validation_errors, to_strict_json_schema)  # don't exist
+
+execution_status: Literal["SUCCESS", "REPAIRED_VIA_REFLECTION", "DLQ_FAILED"]
+```
+
+**After** (`schemas.py`)
+```python
+def format_validation_errors(exc: ValidationError) -> list[str]:
+    return [f"{'.'.join(map(str, e['loc'])) or '(root)'}: {e['msg']}" for e in exc.errors()]
+
+class ExtractionResult(BaseModel):
+    ...
+    execution_status: Literal[
+        "SUCCESS", "REPAIRED_VIA_REFLECTION", "REPAIRED_VIA_HEURISTIC", "DLQ_FAILED"
+    ]
+    partial_data: Optional[dict] = None
+    dlq_path: Optional[str] = None
+```
+**Design decision:** I added `REPAIRED_VIA_HEURISTIC` instead of mislabeling json_repair successes as "reflection". This is a documented deviation from the 3-status spec.
+**Verified by:** `test_irrecoverable_input_goes_to_dlq`
+
+---
+
+### Finding 3: API key fragments leaked into the error log / UI
+
+**Bug:** API errors were logged with the raw exception text: `f"... {type(exc).__name__}: {exc}"`.
+**Why it matters:** Provider 401 messages echo part of the key (e.g. `sk-proj-abc1****wxyz`). `error_log` is rendered directly in the Streamlit audit panel, so the key fragment would show on screen and in the video.
+
+**Before**
+```python
+error_log.append(f"{tag} API error: {type(exc).__name__}: {exc}")
+```
+
+**After**
+```python
+_SECRET_RE = re.compile(r"sk-[A-Za-z0-9_\-*]{6,}")
+
+def _redact(text: str) -> str:
+    return _SECRET_RE.sub("sk-***REDACTED***", text)
+
+error_log.append(_redact(f"{tag} API error: {type(exc).__name__}: {exc}"))
+```
+**Verified by:** `test_api_keys_are_redacted`
+
+---
+
+### Finding 4: No backoff between retries
+
+**Bug:** The retry loop called the model again immediately (`continue`) after a validation failure or transient API error.
+**Why it matters:** The assignment requires "backoff and retry bounds". Instant retries hammer the API and hit rate limits faster.
+
+**Before**
+```python
+while attempts < 1 + max_retries:
+    attempts += 1
+```
+
+**After**
+```python
+while attempts < 1 + max_retries:
+    if attempts > 0:   # 0.5s, 1s, 2s … capped at 8s, + jitter
+        self._sleep(_backoff_seconds(attempts))
+    attempts += 1
+```
+`sleep` is injectable (`InvoiceExtractor(..., sleep=...)`), so the tests run instantly.
+
+---
+
+### Finding 5: Provider switch + SDK argument mismatch (`TypeError`)
+
+**Context:** The draft targeted OpenAI (`response_format=json_schema`), but I use an Anthropic key. The course allows any provider. I switched to **Anthropic tool use**: the invoice schema is the `input_schema` of a single tool, and `tool_choice` forces the model to call it.
+
+**Bug found while switching:** The OpenAI-style `temperature=0` argument raised
+`TypeError: Messages.create() got an unexpected keyword argument 'temperature'` on my installed `anthropic` SDK.
+**Why it matters:** AI drafts often carry arguments from a different SDK or version. It only shows up at runtime.
+
+**Before**
+```python
+response = self._client.chat.completions.create(
+    model=self.model, messages=messages, temperature=0,
+    response_format=self._response_format,
+)
+```
+
+**After**
+```python
+response = self._client.messages.create(
+    model=self.model, max_tokens=MAX_OUTPUT_TOKENS, system=SYSTEM_PROMPT,
+    messages=messages, tools=self._tools, tool_choice=self._tool_choice,
+)
+```
+
+---
+
+### Finding 6: The prompt's reconciliation formula skips the subtotal
+
+**Gap:** The sample prompt's validator only checked `sum(line_total) + tax == total`.
+**Why it matters:** A wrong subtotal, or a line item whose `quantity × unit_price` doesn't match its `line_total`, passes silently.
+**Fix (`schemas.py`):** Three checks, each within 0.02:
+1. `line_total ≈ quantity × unit_price` (`LineItem`)
+2. `subtotal ≈ sum(line_totals)`
+3. `total_amount ≈ subtotal + tax_amount`
+
+**Verified by:** `test_subtotal_mismatch_fails_validation`, `test_totals_mismatch_fails_validation`
