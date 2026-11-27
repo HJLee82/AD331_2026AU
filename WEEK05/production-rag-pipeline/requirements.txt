@@ -1,0 +1,14 @@
+# Runtime
+openai>=1.40
+chromadb>=0.5.5
+sentence-transformers>=3.0
+ddgs>=9.0
+pydantic>=2.6
+python-dotenv>=1.0
+numpy>=1.26
+
+# Optional: only needed when WEB_SEARCH_PROVIDER=tavily
+tavily-python>=0.5
+
+# Dev
+pytest>=8.0

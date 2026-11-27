@@ -1,0 +1,19 @@
+# Secrets: passed at runtime via env_file, never baked into the image
+.env
+.env.*
+!.env.example
+
+# Local environments and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.chroma/
+chroma_db/
+
+# Not needed in the image
+.git/
+tests/
+*.md
+!README.md
+calibration_results.md

@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    image: nimbus-rag:latest
+    container_name: nimbus-rag
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env            # OPENAI_API_KEY, OPENAI_MODEL, ... (never copied into the image)
+    environment:
+      CHROMA_DIR: /data/chroma
+      DOCS_DIR: /app/docs
+    volumes:
+      - chroma-data:/data/chroma   # vector index survives container restarts
+    restart: unless-stopped
+
+volumes:
+  chroma-data:
